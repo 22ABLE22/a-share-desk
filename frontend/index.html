@@ -42,6 +42,10 @@
         </div>
         <div id="activeSymbol" class="active-symbol">—</div>
         <div class="top-actions">
+          <button id="btnTheme" class="theme-toggle" type="button" title="切换主题：自动 / 浅色 / 深色">
+            <span class="ico" id="themeIcon" aria-hidden="true">◐</span>
+            <span id="themeLabel">自动</span>
+          </button>
           <button id="btnRefresh" class="btn ghost">刷新</button>
         </div>
       </header>
@@ -164,13 +168,11 @@
           <div class="panel-head">
             <h2>今日操作建议（白话卡）</h2>
             <div class="inline-actions">
-              <label class="chip"><input type="checkbox" id="chkLLM" /> 本地模型润色</label>
               <button class="btn" id="btnAdviceRefresh">刷新</button>
             </div>
           </div>
           <p class="muted">
             综合分 + <strong>日周多周期共振</strong>过滤：只有分数到阈值且结构配合时才会给强建议。
-            本地模型需安装 Ollama 并拉取 qwen2.5:3b；未安装时自动用规则白话，不影响使用。
           </p>
           <div id="adviceCards" class="advice-cards"></div>
         </div>

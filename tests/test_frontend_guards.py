@@ -66,7 +66,9 @@ def _run_guard_js(app_js: str, expression: str):
         pytest.skip("node not available")
 
     start = app_js.index("const _reqTokens")
-    end = app_js.index("function fmtNum")
+    # Bound at the next section so unrelated (DOM-dependent) code is not pulled
+    # in and evaluated under Node.
+    end = app_js.index("/* ---------- Theme", start)
     helpers = app_js[start:end]
 
     script = helpers + "\nconsole.log(JSON.stringify(" + expression + "));"

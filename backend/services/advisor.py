@@ -2,7 +2,10 @@
 
 Combines daily score with weekly structure and short-term momentum,
 then produces a single recommended action with scenarios.
-Local LLM (Ollama) is optional; rule-based advisor always works.
+
+Explanations come from a transparent rule engine only: an optional local LLM
+(Ollama) was removed, because it could not improve the underlying signal and
+added a dependency that was usually absent.
 """
 from __future__ import annotations
 
@@ -192,22 +195,6 @@ def _scenarios(price: float, stop: float, target: float, cost: float | None) -> 
     return scen
 
 
-def _try_ollama(prompt: str, model: str = "qwen2.5:3b") -> str | None:
-    """Optional local LLM via Ollama HTTP. Never required."""
-    try:
-        import requests
-        r = requests.post(
-            "http://127.0.0.1:11434/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
-            timeout=25,
-        )
-        if r.ok:
-            return (r.json() or {}).get("response")
-    except Exception as e:
-        logger.debug("ollama unavailable: %s", e)
-    return None
-
-
 def advise_symbol(
     code: str,
     market: str = "",
@@ -215,7 +202,6 @@ def advise_symbol(
     shares: float | None = None,
     buy_th: float = DEFAULT_BUY,
     sell_th: float = DEFAULT_SELL,
-    use_llm: bool = False,
 ) -> dict[str, Any]:
     base = se.score_symbol(code, market, cost=cost, shares=shares)
     if not base.get("ok"):
@@ -263,21 +249,7 @@ def advise_symbol(
         "summary": summary,
         "explain_points": detail_lines,
         "engine": "rules+resonance",
-        "llm_text": None,
     }
-
-    if use_llm:
-        prompt = (
-            "你是稳健的个人投资观察助手，用简体中文，不要夸大确定性，不要给出具体仓位百分比承诺。"
-            "根据以下数据，用不超过120字说明：趋势、主要风险、今天更稳妥的做法。\n"
-            + summary
-            + "\n因素："
-            + "；".join(detail_lines[:6])
-        )
-        text = _try_ollama(prompt)
-        if text:
-            out["llm_text"] = text.strip()
-            out["engine"] = "rules+resonance+ollama"
 
     return out
 
@@ -286,12 +258,11 @@ def advise_universe(
     symbols: list[tuple[str, str, float | None, float | None]],
     buy_th: float = DEFAULT_BUY,
     sell_th: float = DEFAULT_SELL,
-    use_llm: bool = False,
 ) -> list[dict]:
     rows = []
     for code, market, cost, shares in symbols:
         try:
-            rows.append(advise_symbol(code, market, cost, shares, buy_th, sell_th, use_llm=use_llm))
+            rows.append(advise_symbol(code, market, cost, shares, buy_th, sell_th))
         except Exception as e:
             rows.append({"ok": False, "code": code, "market": market, "error": str(e)})
     # Sort: strong buy first, then by confidence, avoid dumping fails on top

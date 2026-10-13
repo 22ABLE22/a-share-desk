@@ -12,6 +12,7 @@
 - **基本面**：PE / PB、市值、换手率，以及新手解读提示
 - **自选对比**：多标的归一化走势对比
 - **稳健参考**：同类利率债/货币/宽基/红利 ETF 科普清单
+- **主题切换**：右上角按钮在「自动 / 浅色 / 深色」间循环，默认跟随系统
 
 仓库内**不含**任何真实持仓数据。首次运行时会创建一个空持仓，你可在界面中自行添加：
 
@@ -63,10 +64,22 @@ a-share-desk/
 │   ├── main.py
 │   └── services/
 ├── frontend/         # 网页界面（ECharts）
+├── tests/            # pytest 测试（全部离线，111 项）
 ├── data/             # 本地持仓配置
 ├── requirements.txt
 └── start.bat
 ```
+
+> 目录改名或移动后，`.venv` 内嵌的绝对路径会失效（`pip.exe` 等包装器会静默失败）：
+> 运行 `python repair_venv_paths.py` 就地修复，无需重建虚拟环境。
+
+## 测试
+
+```powershell
+.venv\Scripts\python.exe -m pytest
+```
+
+全部测试离线运行（`conftest.py` 会禁用网络），不依赖任何行情源。
 
 ## 常用操作
 

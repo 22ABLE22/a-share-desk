@@ -42,6 +42,154 @@ function isCurrent(view, token) {
   return _reqTokens.get(view) === token;
 }
 
+/* ---------- Theme ----------
+ * Three modes cycled by one button:
+ *   auto  -> follow the OS preference (prefers-color-scheme)
+ *   light -> always light
+ *   dark  -> always dark
+ *
+ * The button cycles from whichever mode is active, so a user who prefers dark
+ * gets auto -> dark -> light -> auto rather than being forced through light
+ * first. `data-theme` on <html> drives the CSS variables in app.css, and
+ * chartPalette() reads those same variables so ECharts follows along.
+ */
+const THEME_KEY = "a-share-desk.theme";
+const THEME_MODES = ["auto", "light", "dark"];
+
+const _mql = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+
+function systemTheme() {
+  return _mql && _mql.matches ? "dark" : "light";
+}
+
+function storedTheme() {
+  try {
+    const v = localStorage.getItem(THEME_KEY);
+    return THEME_MODES.includes(v) ? v : "auto";
+  } catch (_) {
+    return "auto"; // private mode / storage disabled
+  }
+}
+
+/** Resolve a mode to the concrete theme that should be painted. */
+function resolveTheme(mode) {
+  return mode === "auto" ? systemTheme() : mode;
+}
+
+/** Next mode in the cycle, starting from the active one. */
+function nextThemeMode(mode) {
+  const base = THEME_MODES.indexOf(mode);
+  return THEME_MODES[(base + 1) % THEME_MODES.length];
+}
+
+const THEME_ICON = { auto: "◐", light: "☀", dark: "☾" };
+const THEME_LABEL = { auto: "自动", light: "浅色", dark: "深色" };
+
+function applyTheme(mode) {
+  const resolved = resolveTheme(mode);
+  document.documentElement.setAttribute("data-theme", resolved);
+  refreshPalette(); // charts read CSS vars, so re-resolve after the switch
+  const icon = $("#themeIcon");
+  const label = $("#themeLabel");
+  if (icon) icon.textContent = THEME_ICON[mode] || "◐";
+  if (label) label.textContent = THEME_LABEL[mode] || "自动";
+  const btn = $("#btnTheme");
+  if (btn) {
+    // Show both the mode and what it currently resolves to.
+    btn.title = mode === "auto"
+      ? `主题：自动（当前${THEME_LABEL[resolved]}）· 点击切换`
+      : `主题：${THEME_LABEL[mode]} · 点击切换`;
+  }
+  return resolved;
+}
+
+function setTheme(mode) {
+  try {
+    localStorage.setItem(THEME_KEY, mode);
+  } catch (_) {}
+  return applyTheme(mode);
+}
+
+/** Read a CSS custom property so charts match the active theme. */
+function cssVar(name, fallback = "") {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name);
+  return (v || "").trim() || fallback;
+}
+
+/** Colour set for ECharts options, derived from the active theme. */
+function chartPalette() {
+  return {
+    text: cssVar("--text", "#1a2233"),
+    muted: cssVar("--muted", "#6b7a90"),
+    line: cssVar("--line", "rgba(15,23,42,0.08)"),
+    surface: cssVar("--bg2", "#ffffff"),
+    up: cssVar("--up", "#e03131"),
+    down: cssVar("--down", "#0ca678"),
+    accent: cssVar("--accent", "#2f6fed"),
+    tooltipBg: cssVar("--overlay-bg", "rgba(255,255,255,0.95)"),
+    splitLine: cssVar("--line", "rgba(107,122,144,0.08)"),
+    axis: cssVar("--axis", "#c5d0e0"),
+    mask: cssVar("--mask", "rgba(244,246,251,0.6)"),
+  };
+}
+
+/** Redraw whatever charts are currently on screen after a theme change. */
+function refreshChartsForTheme() {
+  try {
+    if (state.portfolio) renderAlloc(state.portfolio.holdings || []);
+  } catch (_) {}
+  try {
+    if (state.history && state.mode !== "intraday") renderKline(state.history);
+    else if (state.intraday) renderIntraday(state.intraday);
+  } catch (_) {}
+  try {
+    if (state.portfolio) renderCompareChart(state.portfolio.watchlist || []);
+  } catch (_) {}
+}
+
+/**
+ * Module-level chart palette.
+ *
+ * ECharts options are plain objects built in many places, so the resolved
+ * colours are kept here and refreshed whenever the theme changes. Reading
+ * them from CSS variables (rather than duplicating hex values) is what keeps
+ * charts and the surrounding page from disagreeing.
+ */
+let PAL = null;
+
+function refreshPalette() {
+  PAL = chartPalette();
+  return PAL;
+}
+
+// Initialise immediately: the script runs at the end of <body>, so the
+// stylesheet is applied and getComputedStyle already resolves the variables.
+refreshPalette();
+
+function initTheme() {
+  applyTheme(storedTheme());
+  const btn = $("#btnTheme");
+  if (btn) {
+    btn.addEventListener("click", () => {
+      const now = storedTheme();
+      const mode = nextThemeMode(now);
+      setTheme(mode);
+      refreshChartsForTheme();
+    });
+  }
+  // Follow OS changes only while in auto mode.
+  if (_mql) {
+    const onSystemChange = () => {
+      if (storedTheme() === "auto") {
+        applyTheme("auto");
+        refreshChartsForTheme();
+      }
+    };
+    if (_mql.addEventListener) _mql.addEventListener("change", onSystemChange);
+    else if (_mql.addListener) _mql.addListener(onSystemChange);
+  }
+}
+
 function fmtNum(n, digits = 2) {
   if (n === null || n === undefined || Number.isNaN(Number(n))) return "—";
   return Number(n).toLocaleString("zh-CN", {
@@ -335,21 +483,21 @@ function renderAlloc(holdings) {
     chart.clear();
     chart.setOption({
       backgroundColor: "transparent",
-      title: { text: "暂无持仓", left: "center", top: "middle", textStyle: { color: "#6b7a90", fontSize: 14 } },
+      title: { text: "暂无持仓", left: "center", top: "middle", textStyle: { color: PAL.muted, fontSize: 14 } },
     });
     return;
   }
   chart.setOption({
     backgroundColor: "transparent",
     tooltip: { trigger: "item", formatter: "{b}<br/>仓位 {d}%" },
-    legend: { bottom: 0, textStyle: { color: "#6b7a90" } },
+    legend: { bottom: 0, textStyle: { color: PAL.muted } },
     series: [
       {
         type: "pie",
         radius: ["42%", "68%"],
         center: ["50%", "46%"],
-        itemStyle: { borderColor: "#f4f6fb", borderWidth: 2 },
-        label: { color: "#1a2233", formatter: "{b}\n{d}%" },
+        itemStyle: { borderColor: PAL.surface, borderWidth: 2 },
+        label: { color: PAL.text, formatter: "{b}\n{d}%" },
         data: holdings.map((h) => ({ name: h.name || h.code, value: Number(h.mv.toFixed(2)) })),
       },
     ],
@@ -461,7 +609,7 @@ async function loadChart() {
   const token = beginRequest("chart");
   state.signals = null; // 防跨标的残留
   if (!klineChart) klineChart = echarts.init(el);
-  klineChart.showLoading({ text: "加载中", color: "#2f6fed", maskColor: "rgba(244,246,251,0.6)" });
+  klineChart.showLoading({ text: "加载中", color: PAL.accent, maskColor: PAL.mask });
   if (state.mode === "intraday") {
     try {
       const data = await api(
@@ -503,7 +651,7 @@ function renderIntraday(data) {
   if (!bars.length) {
     klineChart.hideLoading();
     klineChart.clear();
-    klineChart.setOption({ title: { text: "暂无分时数据（休市或数据源未覆盖）", left: "center", top: "middle", textStyle: { color: "#6b7a90", fontSize: 14 } } }, true);
+    klineChart.setOption({ title: { text: "暂无分时数据（休市或数据源未覆盖）", left: "center", top: "middle", textStyle: { color: PAL.muted, fontSize: 14 } } }, true);
     return;
   }
   const prev = Number(data.prev_close) || 0;
@@ -524,18 +672,18 @@ function renderIntraday(data) {
     {
       backgroundColor: "transparent",
       animation: false,
-      legend: { top: 8, data: ["价格", "均价"], textStyle: { color: "#6b7a90" } },
+      legend: { top: 8, data: ["价格", "均价"], textStyle: { color: PAL.muted } },
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "cross" },
-        backgroundColor: "rgba(255,255,255,0.95)",
-        textStyle: { color: "#1a2233", fontSize: 12 },
+        backgroundColor: PAL.tooltipBg,
+        textStyle: { color: PAL.text, fontSize: 12 },
         formatter: (params) => {
           const i = params[0]?.dataIndex ?? 0;
           const b = bars[i];
           if (!b) return "";
           const chg = prev ? ((b.close / prev - 1) * 100) : null;
-          const color = chg == null ? "#6b7a90" : chg >= 0 ? "#e03131" : "#0ca678";
+          const color = chg == null ? PAL.muted : chg >= 0 ? PAL.up : PAL.down;
           return [
             `<div style="font-weight:600">${(b.time || "").slice(5, 16)}</div>`,
             `价 <b>${fmtNum(b.close, 3)}</b>　均 ${fmtNum(b.avg_price, 3)}`,
@@ -550,33 +698,33 @@ function renderIntraday(data) {
         { left: 56, right: 56, top: "76%", height: "14%" },
       ],
       xAxis: [
-        { type: "category", data: times, gridIndex: 0, boundaryGap: false, axisLabel: { color: "#6b7a90" }, axisLine: { lineStyle: { color: "#c5d0e0" } } },
-        { type: "category", data: times, gridIndex: 1, axisLabel: { show: false }, axisLine: { lineStyle: { color: "#c5d0e0" } } },
+        { type: "category", data: times, gridIndex: 0, boundaryGap: false, axisLabel: { color: PAL.muted }, axisLine: { lineStyle: { color: PAL.axis } } },
+        { type: "category", data: times, gridIndex: 1, axisLabel: { show: false }, axisLine: { lineStyle: { color: PAL.axis } } },
       ],
       yAxis: [
         prev
           ? {
               gridIndex: 0, splitNumber: 4,
               min: (v) => Math.min(v.min, prev), max: (v) => Math.max(v.max, prev),
-              axisLabel: { color: "#6b7a90", formatter: (v) => (((v / prev - 1) * 100).toFixed(2) + "%") },
-              splitLine: { lineStyle: { color: "rgba(107,122,144,0.08)" } },
+              axisLabel: { color: PAL.muted, formatter: (v) => (((v / prev - 1) * 100).toFixed(2) + "%") },
+              splitLine: { lineStyle: { color: PAL.splitLine } },
             }
-          : { gridIndex: 0, scale: true, axisLabel: { color: "#6b7a90" }, splitLine: { lineStyle: { color: "rgba(107,122,144,0.08)" } } },
-        { gridIndex: 1, splitLine: { show: false }, axisLabel: { color: "#6b7a90", formatter: (v) => (v > 1e8 ? (v / 1e8).toFixed(1) + "亿" : v > 1e4 ? (v / 1e4).toFixed(0) + "万" : v) } },
+          : { gridIndex: 0, scale: true, axisLabel: { color: PAL.muted }, splitLine: { lineStyle: { color: PAL.splitLine } } },
+        { gridIndex: 1, splitLine: { show: false }, axisLabel: { color: PAL.muted, formatter: (v) => (v > 1e8 ? (v / 1e8).toFixed(1) + "亿" : v > 1e4 ? (v / 1e4).toFixed(0) + "万" : v) } },
       ],
       dataZoom: [
         { type: "inside", xAxisIndex: [0, 1] },
-        { type: "slider", xAxisIndex: [0, 1], bottom: 8, height: 16, fillerColor: "rgba(47,111,237,0.12)", textStyle: { color: "#6b7a90" } },
+        { type: "slider", xAxisIndex: [0, 1], bottom: 8, height: 16, fillerColor: "rgba(47,111,237,0.12)", textStyle: { color: PAL.muted } },
       ],
       series: [
         {
           name: "价格", type: "line", data: prices, showSymbol: false, smooth: false,
           xAxisIndex: 0, yAxisIndex: 0,
-          lineStyle: { width: 1.4, color: "#2f6fed" },
+          lineStyle: { width: 1.4, color: PAL.accent },
           areaStyle: { color: { type: "linear", x: 0, y: 0, x2: 0, y2: 1, colorStops: [ { offset: 0, color: "rgba(47,111,237,0.18)" }, { offset: 1, color: "rgba(47,111,237,0.02)" } ] } },
           markLine: prev ? {
             silent: true, symbol: "none",
-            data: [{ yAxis: prev, label: { formatter: "昨收 " + fmtNum(prev, 3), color: "#6b7a90", fontSize: 10 }, lineStyle: { color: "#9aa8bb", type: "dashed", width: 1 } }],
+            data: [{ yAxis: prev, label: { formatter: "昨收 " + fmtNum(prev, 3), color: PAL.muted, fontSize: 10 }, lineStyle: { color: PAL.muted, type: "dashed", width: 1 } }],
           } : undefined,
         },
         { name: "均价", type: "line", data: avgs, showSymbol: false, xAxisIndex: 0, yAxisIndex: 0, lineStyle: { width: 1, color: "#f5a524" } },
@@ -605,7 +753,7 @@ function buildSignalMarks(bars) {
       symbolSize: 11,
       symbolRotate: buy ? 0 : 180,
       symbolOffset: buy ? [0, 8] : [0, -8],
-      itemStyle: { color: buy ? "#e03131" : "#0ca678", borderColor: "#ffffff", borderWidth: 1 },
+      itemStyle: { color: buy ? PAL.up : PAL.down, borderColor: PAL.surface, borderWidth: 1 },
       label: { show: false },
       tooltip: { formatter: `${s.date}<br/>${s.name}（${s.detail}）<br/>收盘 ${fmtNum(s.close, 3)}` },
     });
@@ -659,10 +807,10 @@ function renderKline(data) {
       xAxisIndex: 0,
       yAxisIndex: 0,
       itemStyle: {
-        color: "#e03131",
-        color0: "#0ca678",
-        borderColor: "#e03131",
-        borderColor0: "#0ca678",
+        color: PAL.up,
+        color0: PAL.down,
+        borderColor: PAL.up,
+        borderColor0: PAL.down,
       },
       markPoint: buildSignalMarks(bars),
     },
@@ -670,7 +818,7 @@ function renderKline(data) {
 
   if (showMA) {
     ["ma5", "ma10", "ma20", "ma60"].forEach((key, i) => {
-      const colors = ["#f5c542", "#2f6fed", "#c084fc", "#38bdf8"];
+      const colors = ["#f5c542", PAL.accent, "#c084fc", "#38bdf8"];
       series.push({
         name: key.toUpperCase(),
         type: "line",
@@ -687,8 +835,8 @@ function renderKline(data) {
   if (showBoll) {
     [
       ["boll_upper", "#f5a524"],
-      ["boll_mid", "#6b7a90"],
-      ["boll_lower", "#0ca678"],
+      ["boll_mid", PAL.muted],
+      ["boll_lower", PAL.down],
     ].forEach(([key, color]) => {
       series.push({
         name: key,
@@ -780,8 +928,8 @@ function renderKline(data) {
     type: "category",
     data: dates,
     gridIndex: i,
-    axisLine: { lineStyle: { color: "#c5d0e0" } },
-    axisLabel: { show: i === 0, color: "#6b7a90" },
+    axisLine: { lineStyle: { color: PAL.axis } },
+    axisLabel: { show: i === 0, color: PAL.muted },
   }));
 
   const yAxis = grid.map((_, i) => {
@@ -790,16 +938,16 @@ function renderKline(data) {
         scale: true,
         gridIndex: i,
         splitLine: { show: false },
-        axisLabel: { color: "#6b7a90", formatter: (v) => (v > 1e8 ? (v / 1e8).toFixed(1) + "亿" : v > 1e4 ? (v / 1e4).toFixed(0) + "万" : v) },
+        axisLabel: { color: PAL.muted, formatter: (v) => (v > 1e8 ? (v / 1e8).toFixed(1) + "亿" : v > 1e4 ? (v / 1e4).toFixed(0) + "万" : v) },
       };
     }
     if (i === 1 && panels[0] === "macd") {
-      return { scale: true, gridIndex: i, splitLine: { show: false }, axisLabel: { color: "#6b7a90" }, name: "MACD", nameTextStyle: { color: "#6b7a90", fontSize: 10 } };
+      return { scale: true, gridIndex: i, splitLine: { show: false }, axisLabel: { color: PAL.muted }, name: "MACD", nameTextStyle: { color: PAL.muted, fontSize: 10 } };
     }
     if (i === 2) {
-      return { scale: true, gridIndex: i, splitLine: { show: false }, axisLabel: { color: "#6b7a90" }, name: "MACD", nameTextStyle: { color: "#6b7a90", fontSize: 10 } };
+      return { scale: true, gridIndex: i, splitLine: { show: false }, axisLabel: { color: PAL.muted }, name: "MACD", nameTextStyle: { color: PAL.muted, fontSize: 10 } };
     }
-    return { scale: true, gridIndex: 0, splitLine: { lineStyle: { color: "rgba(107,122,144,0.08)" } }, axisLabel: { color: "#6b7a90" } };
+    return { scale: true, gridIndex: 0, splitLine: { lineStyle: { color: PAL.splitLine } }, axisLabel: { color: PAL.muted } };
   });
 
   const allXIdx = panels.length ? Array.from({ length: 1 + panels.length }, (_, i) => i) : 0;
@@ -808,13 +956,13 @@ function renderKline(data) {
     {
       backgroundColor: "transparent",
       animation: false,
-      legend: { top: 8, textStyle: { color: "#6b7a90" }, selectedMode: true },
+      legend: { top: 8, textStyle: { color: PAL.muted }, selectedMode: true },
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "cross" },
-        backgroundColor: "rgba(255,255,255,0.95)",
-        borderColor: "rgba(107,122,144,0.2)",
-        textStyle: { color: "#1a2233", fontSize: 12 },
+        backgroundColor: PAL.tooltipBg,
+        borderColor: PAL.splitLine,
+        textStyle: { color: PAL.text, fontSize: 12 },
         formatter: (params) => {
           const i = params[0]?.dataIndex ?? 0;
           const b = bars[i];
@@ -826,7 +974,7 @@ function renderKline(data) {
           ];
           if (b.change_pct !== undefined && b.change_pct !== null) {
             const t = toneClass(b.change_pct);
-            lines.push(`<span style="color:${t === "up" ? "#e03131" : t === "down" ? "#0ca678" : "#6b7a90"}">涨跌 ${fmtPct(b.change_pct)}</span>`);
+            lines.push(`<span style="color:${t === "up" ? PAL.up : t === "down" ? PAL.down : PAL.muted}">涨跌 ${fmtPct(b.change_pct)}</span>`);
           }
           if (b.rsi14 != null) lines.push(`RSI14 ${fmtNum(b.rsi14, 1)}`);
           if (b.macd_dif != null) lines.push(`MACD DIF ${fmtNum(b.macd_dif, 3)} DEA ${fmtNum(b.macd_dea, 3)} 柱 ${fmtNum(b.macd_hist, 3)}`);
@@ -836,7 +984,7 @@ function renderKline(data) {
       axisPointer: { link: [{ xAxisIndex: "all" }] },
       dataZoom: [
         { type: "inside", xAxisIndex: allXIdx },
-        { type: "slider", xAxisIndex: allXIdx, bottom: 8, height: 16, borderColor: "rgba(107,122,144,0.2)", fillerColor: "rgba(47,111,237,0.12)", textStyle: { color: "#6b7a90" } },
+        { type: "slider", xAxisIndex: allXIdx, bottom: 8, height: 16, borderColor: PAL.splitLine, fillerColor: "rgba(47,111,237,0.12)", textStyle: { color: PAL.muted } },
       ],
       grid,
       xAxis,
@@ -1014,16 +1162,16 @@ async function renderCompareChart(list) {
     compareChart.clear();
     compareChart.setOption({
       backgroundColor: "transparent",
-      title: { text: "添加自选后显示对比", left: "center", top: "middle", textStyle: { color: "#6b7a90", fontSize: 14 } },
+      title: { text: "添加自选后显示对比", left: "center", top: "middle", textStyle: { color: PAL.muted, fontSize: 14 } },
     });
     return;
   }
 
-  compareChart.showLoading({ text: "加载中", color: "#2f6fed", maskColor: "rgba(244,246,251,0.5)" });
+  compareChart.showLoading({ text: "加载中", color: PAL.accent, maskColor: PAL.mask });
   try {
     const series = [];
     let dates = null;
-    const colors = ["#2f6fed", "#e03131", "#f5c542", "#38bdf8", "#c084fc", "#0ca678"];
+    const colors = [PAL.accent, PAL.up, "#f5c542", "#38bdf8", "#c084fc", PAL.down];
     for (let i = 0; i < list.length; i++) {
       const w = list[i];
       const hist = await api(`/api/history?symbol=${encodeURIComponent(w.code)}&market=${encodeURIComponent(w.market)}&days=250`);
@@ -1044,11 +1192,11 @@ async function renderCompareChart(list) {
     compareChart.setOption(
       {
         backgroundColor: "transparent",
-        tooltip: { trigger: "axis", backgroundColor: "rgba(255,255,255,0.95)", textStyle: { color: "#1a2233" } },
-        legend: { top: 8, textStyle: { color: "#6b7a90" } },
+        tooltip: { trigger: "axis", backgroundColor: PAL.tooltipBg, textStyle: { color: PAL.text } },
+        legend: { top: 8, textStyle: { color: PAL.muted } },
         grid: { left: 48, right: 16, top: 40, bottom: 40 },
-        xAxis: { type: "category", data: dates || [], axisLabel: { color: "#6b7a90" } },
-        yAxis: { scale: true, splitLine: { lineStyle: { color: "rgba(107,122,144,0.08)" } }, axisLabel: { color: "#6b7a90" } },
+        xAxis: { type: "category", data: dates || [], axisLabel: { color: PAL.muted } },
+        yAxis: { scale: true, splitLine: { lineStyle: { color: PAL.splitLine } }, axisLabel: { color: PAL.muted } },
         series,
       },
       true
@@ -1316,9 +1464,9 @@ $("#btnClearAlerts")?.addEventListener("click", async () => {
 function scoreColor(score) {
   const s = Number(score) || 50;
   if (s >= 72) return "var(--up)";
-  if (s >= 58) return "#e8590c";
+  if (s >= 58) return "var(--score-warm)";
   if (s > 42) return "var(--muted)";
-  if (s > 30) return "#0b7285";
+  if (s > 30) return "var(--score-cool)";
   return "var(--down)";
 }
 
@@ -1500,9 +1648,8 @@ function startLivePolling() {
 async function loadAdvice() {
   const box = $("#adviceCards");
   box.innerHTML = `<div class="empty">计算中…</div>`;
-  const useLLM = !!$("#chkLLM")?.checked;
   try {
-    const data = await api(`/api/advice?use_llm=${useLLM ? "true" : "false"}`);
+    const data = await api("/api/advice");
     const items = (data.items || []).filter((x) => x.ok);
     if (!items.length) {
       box.innerHTML = `<div class="empty">暂无标的，请先添加持仓或自选</div>`;
@@ -1527,7 +1674,6 @@ async function loadAdvice() {
         <div class="meta">${escapeHtml(it.pos_hint || "")}</div>
         ${pts ? `<ul>${pts}</ul>` : ""}
         ${scen ? `<ul>${scen}</ul>` : ""}
-        ${it.llm_text ? `<div class="llm"><b>本地模型：</b>${escapeHtml(it.llm_text)}</div>` : ""}
       </div>`;
     }).join("");
 
@@ -1543,7 +1689,6 @@ async function loadAdvice() {
 }
 
 $("#btnAdviceRefresh")?.addEventListener("click", loadAdvice);
-$("#chkLLM")?.addEventListener("change", loadAdvice);
 
 $("#btnBacktest")?.addEventListener("click", async () => {
   const box = $("#backtestBox");
@@ -1589,6 +1734,7 @@ window.addEventListener("resize", () => {
 });
 
 async function boot() {
+  initTheme();
   setActiveSymbol("159516", "SZ", "159516.SZ");
   await loadPortfolio();
   loadSignalsSide();

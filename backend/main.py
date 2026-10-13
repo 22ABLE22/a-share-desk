@@ -292,7 +292,7 @@ def signals_pro(symbol: str = "", market: str = ""):
 
 
 @app.get("/api/advice")
-def advice(symbol: str = "", market: str = "", use_llm: bool = False):
+def advice(symbol: str = "", market: str = ""):
     """Stricter multi-TF action card (plain language)."""
     pf = pf_svc.load()
     if symbol:
@@ -303,7 +303,7 @@ def advice(symbol: str = "", market: str = "", use_llm: bool = False):
             if h["code"] == symbol or full_h == full_s:
                 cost, shares = float(h.get("cost") or 0) or None, float(h.get("shares") or 0) or None
                 break
-        return advisor_svc.advise_symbol(symbol, market, cost=cost, shares=shares, use_llm=use_llm)
+        return advisor_svc.advise_symbol(symbol, market, cost=cost, shares=shares)
 
     rows = []
     seen = set()
@@ -316,7 +316,7 @@ def advice(symbol: str = "", market: str = "", use_llm: bool = False):
         if key in seen:
             continue
         rows.append((key[0], key[1], None, None))
-    items = advisor_svc.advise_universe(rows, use_llm=use_llm)
+    items = advisor_svc.advise_universe(rows)
     return {
         "items": items,
         "disclaimer": "多周期共振建议，仅供学习观察，不构成投资建议。",

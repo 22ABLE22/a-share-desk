@@ -470,6 +470,7 @@ async function loadChart() {
       if (!isCurrent("chart", token)) return; // 已被更新的请求取代
       state.intraday = data;
       setActiveSymbol(data.code, data.market, data.name);
+      renderAdjustNotice(null); // 分时无复权概念，清掉提示
       renderIntraday(data);
       await loadSignalsSide();
     } catch (e) {
@@ -486,6 +487,7 @@ async function loadChart() {
     if (!isCurrent("chart", token)) return; // 已被更新的请求取代
     state.history = data;
     setActiveSymbol(data.code, data.market, data.name);
+    renderAdjustNotice(data);
     renderKline(data);
     await loadSignalsSide();
   } catch (e) {
@@ -609,6 +611,29 @@ function buildSignalMarks(bars) {
     });
   }
   return { data };
+}
+
+/**
+ * Report the price convention actually returned by /api/history.
+ *
+ * Two upstreams cannot honour the requested adjust — sina's ETF endpoint has no
+ * adjust parameter (always 不复权) and tencent hardcodes qfq — so when the
+ * fallback chain lands on one of them the requested and actual conventions
+ * differ. Showing that explicitly is the whole point: previously the UI
+ * silently displayed prices under the wrong label.
+ */
+function renderAdjustNotice(data) {
+  const el = $("#adjustNotice");
+  if (!el) return;
+  const applied = data?.adjust_applied;
+  if (!data?.adjust_mismatch || (applied !== "qfq" && applied !== "")) {
+    el.classList.add("hidden");
+    el.textContent = "";
+    return;
+  }
+  const label = applied === "qfq" ? "前复权" : "不复权";
+  el.textContent = `当前数据源不支持所选口径，实际为「${label}」`;
+  el.classList.remove("hidden");
 }
 
 function renderKline(data) {

@@ -180,6 +180,16 @@ button { cursor: pointer; }
 }
 .seg button.active { background: rgba(47, 111, 237, 0.12); color: #1d4ed8; font-weight: 600; }
 
+/* 复权口径提示：所选口径与数据源实际返回不一致时显示 */
+.adjust-notice {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: 8px;
+  background: rgba(217, 119, 6, 0.1); color: var(--warn);
+  border: 1px solid rgba(217, 119, 6, 0.25);
+  font-size: 12px; line-height: 1.4;
+}
+.adjust-notice::before { content: "⚠"; font-size: 12px; }
+
 .chip-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .chip {
   display: inline-flex; align-items: center; gap: 6px;

@@ -76,12 +76,31 @@ def test_tencent_fetch_returns_raw_lots():
 
 def test_fallback_chain_declares_units():
     """EM and tencent pass volume_in_lots=True; sina does not."""
+    import ast
     import inspect
+    import textwrap
 
-    src = inspect.getsource(data._history_normalized)
-    assert src.count("volume_in_lots=True") == 2
-    # sina call must be the plain two-arg form
-    assert "_fetch_hist_sina(code, market, adjust or \"qfq\"), days)" in src
+    src = textwrap.dedent(inspect.getsource(data._history_normalized))
+    tree = ast.parse(src)
+
+    # Map each source call to whether it was given volume_in_lots=True.
+    seen: dict[str, bool] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        # The source fetch is the first positional arg of _standardize_ohlcv.
+        if not node.args or not isinstance(node.args[0], ast.Call):
+            continue
+        inner = node.args[0].func
+        name = inner.attr if isinstance(inner, ast.Attribute) else getattr(inner, "id", "")
+        if name.startswith("_fetch_hist_"):
+            kwargs = {k.arg: k.value for k in node.keywords}
+            lots = kwargs.get("volume_in_lots")
+            seen[name] = isinstance(lots, ast.Constant) and lots.value is True
+
+    assert seen.get("_fetch_hist_em") is True, "EM volume is in 手 -> needs conversion"
+    assert seen.get("_fetch_hist_tencent") is True, "tencent volume is in 手 -> needs conversion"
+    assert seen.get("_fetch_hist_sina") is False, "sina volume is already 股"
 
 
 def test_amount_not_fabricated_from_volume():

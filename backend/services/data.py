@@ -642,15 +642,29 @@ def _fetch_hist_em(code: str, market: str, start_s: str, end_s: str, adjust: str
 
 
 def _fetch_hist_sina(code: str, market: str, adjust: str = "qfq") -> pd.DataFrame:
+    """Sina daily history.
+
+    `ak.stock_zh_a_daily` honours `adjust` for stocks, but the ETF endpoint
+    (`ak.fund_etf_hist_sina`) takes no adjust argument at all and always returns
+    unadjusted prices. Verified against East Money on 510050: sina matched EM's
+    raw close to 3e-6, and EM's qfq close differed by up to 0.30.
+
+    The caller records the actual convention via _APPLIED_ADJUST_ATTR.
+    """
     import akshare as ak
     prefix = market.lower()
     if _is_etf(code, market):
         return ak.fund_etf_hist_sina(symbol=f"{prefix}{code}")
-    return ak.stock_zh_a_daily(symbol=f"{prefix}{code}", adjust=adjust or "qfq")
+    return ak.stock_zh_a_daily(symbol=f"{prefix}{code}", adjust=adjust or "")
 
 
 def _fetch_hist_tencent(code: str, market: str) -> pd.DataFrame:
     """Tencent daily K as last-resort fallback.
+
+    The endpoint URL hardcodes `qfq`, so this source ALWAYS returns forward-
+    adjusted (前复权) prices regardless of what the caller asked for. Verified
+    against East Money on 510050: tencent matched EM's qfq close (mean |diff|
+    0.031) and diverged from EM's raw close.
 
     Returns raw upstream values: Tencent reports volume in 手 (lots), so the
     caller must pass volume_in_lots=True to _standardize_ohlcv. Tencent does not
@@ -697,22 +711,37 @@ def _history_normalized(code: str, market: str, days: int, adjust: str) -> pd.Da
     end_s = end.strftime("%Y%m%d")
 
     def try_sources():
-        # EM once (rich fields); fail fast to sina/tencent.
+        # Each source's REAL price convention, which is not always the requested
+        # one:
+        #   EM      -> honours `adjust` (qfq or raw)
+        #   sina    -> stocks honour `adjust`; ETFs are always raw (no such param)
+        #   tencent -> always qfq (URL hardcodes it)
+        # The convention actually returned is stamped onto the frame so callers
+        # can tell the user instead of silently showing the wrong prices.
         # Volume unit per source: EM -> 手, sina -> 股, tencent -> 手.
         try:
             df = _standardize_ohlcv(
-                _fetch_hist_em(code, market, start_s, end_s, adjust or "qfq"),
+                _fetch_hist_em(code, market, start_s, end_s, adjust),
                 days,
                 volume_in_lots=True,
             )
             if len(df):
+                df.attrs[_APPLIED_ADJUST_ATTR] = adjust
                 return df
         except Exception as e:
             logger.warning("EM hist %s.%s: %s", code, market, e)
         # Sina
         try:
-            df = _standardize_ohlcv(_fetch_hist_sina(code, market, adjust or "qfq"), days)
+            df = _standardize_ohlcv(_fetch_hist_sina(code, market, adjust), days)
             if len(df):
+                # ETF endpoint cannot adjust, so it is always unadjusted.
+                sina_applied = "" if _is_etf(code, market) else adjust
+                if sina_applied != adjust:
+                    logger.info(
+                        "sina hist %s.%s: requested adjust=%r but source is raw",
+                        code, market, adjust,
+                    )
+                df.attrs[_APPLIED_ADJUST_ATTR] = sina_applied
                 return df
         except Exception as e:
             logger.warning("Sina hist %s.%s: %s", code, market, e)
@@ -722,6 +751,12 @@ def _history_normalized(code: str, market: str, days: int, adjust: str) -> pd.Da
                 _fetch_hist_tencent(code, market), days, volume_in_lots=True
             )
             if len(df):
+                if adjust != "qfq":
+                    logger.info(
+                        "tencent hist %s.%s: requested adjust=%r but source is qfq",
+                        code, market, adjust,
+                    )
+                df.attrs[_APPLIED_ADJUST_ATTR] = "qfq"
                 return df
         except Exception as e:
             logger.warning("Tencent hist %s.%s: %s", code, market, e)
@@ -737,6 +772,19 @@ def _history_normalized(code: str, market: str, days: int, adjust: str) -> pd.Da
 _HISTORY_TIERS = (60, 120, 250, 500)
 
 
+def _normalize_adjust(adjust: str | None) -> str:
+    """Map a user-supplied adjust value to a canonical one.
+
+    Only "qfq" and "" (unadjusted) are supported; anything else falls back to
+    qfq. Note this deliberately does NOT turn "" into "qfq" — that previously
+    made the UI's 不复权 button silently return forward-adjusted data.
+    """
+    a = (adjust or "").strip().lower()
+    if a in ("", "none", "raw", "bfq"):
+        return ""
+    return "qfq"
+
+
 def _snap_days(days: int) -> int:
     for tier in _HISTORY_TIERS:
         if days <= tier:
@@ -744,15 +792,33 @@ def _snap_days(days: int) -> int:
     return max(_HISTORY_TIERS[-1], int(days))
 
 
+# Records which price convention a returned frame actually carries.
+# "qfq" = 前复权, "" = 不复权. Set by the fallback chain because two upstreams
+# cannot honour the requested adjust (see _fetch_hist_sina / _fetch_hist_tencent).
+_APPLIED_ADJUST_ATTR = "applied_adjust"
+
+
+def _applied_adjust(df: pd.DataFrame) -> str | None:
+    """Price convention actually present in `df`, or None if unknown."""
+    if df is None or len(df) == 0:
+        return None
+    return getattr(df, "attrs", {}).get(_APPLIED_ADJUST_ATTR)
+
+
 def get_history(code: str, market: str = "", days: int = 250, adjust: str = "qfq") -> pd.DataFrame:
     """Daily OHLCV history with multi-source fallback.
 
     Symbols are normalized before caching so '159516'+'SZ' and '159516.SZ'
     share one cache entry instead of fetching twice.
+
+    `adjust`: "qfq" for 前复权, "" for 不复权. NOTE: the requested convention is
+    not always available — see `_fetch_hist_sina` / `_fetch_hist_tencent`. The
+    frame's `attrs["applied_adjust"]` reports what was really returned, so
+    callers must not assume it matches the request.
     """
     code, market = parse_symbol(_full_code(code, market))
     tier = _snap_days(int(days))
-    df = _history_normalized(code, market, tier, adjust or "qfq")
+    df = _history_normalized(code, market, tier, _normalize_adjust(adjust))
     if df is None or len(df) == 0:
         return pd.DataFrame()
     if len(df) > int(days):

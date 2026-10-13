@@ -130,9 +130,14 @@ def _frames_to_records(df) -> list[dict]:
 
 @app.get("/api/history")
 def history(symbol: str, market: str = "", days: int = 250, adjust: str = "qfq"):
+    requested = data_svc._normalize_adjust(adjust)
     df = data_svc.get_history(symbol, market, days=days, adjust=adjust)
     if df is None or len(df) == 0:
         raise HTTPException(status_code=404, detail="无历史数据")
+    # Read the convention off the raw frame: two upstreams cannot honour the
+    # request (sina ETFs are always raw, tencent is always qfq), so the caller
+    # must be told what the prices actually are rather than assume.
+    applied = data_svc._applied_adjust(df)
     enriched = ind.enrich(df)
     records = _frames_to_records(enriched)
     code, mkt = data_svc.parse_symbol(symbol if not market else data_svc._full_code(symbol, market))
@@ -144,6 +149,9 @@ def history(symbol: str, market: str = "", days: int = 250, adjust: str = "qfq")
         "full": q.get("full"),
         "name": q.get("name"),
         "type": q.get("type"),
+        "adjust_requested": requested,
+        "adjust_applied": applied,
+        "adjust_mismatch": applied is not None and applied != requested,
         "bars": records,
     }
 

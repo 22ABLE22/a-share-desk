@@ -23,7 +23,7 @@ from services import reference as ref_svc
 from services import signal_engine as se_svc
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("gupiao")
+logger = logging.getLogger("a-share-desk")
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend"
@@ -78,7 +78,7 @@ class WatchIn(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "app": "gupiao"}
+    return {"ok": True, "app": "a-share-desk"}
 
 
 @app.get("/api/quote")

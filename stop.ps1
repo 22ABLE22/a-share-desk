@@ -1,4 +1,4 @@
-# Stop all local gupiao/uvicorn servers on 8765
+# Stop all local a-share-desk/uvicorn servers on 8765
 $ErrorActionPreference = 'SilentlyContinue'
 
 Get-CimInstance Win32_Process | Where-Object {

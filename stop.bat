@@ -1,7 +1,7 @@
 @echo off
 setlocal
-title Gupiao Stop
-echo Stopping gupiao...
+title A-Share Desk Stop
+echo Stopping a-share-desk...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0stop.ps1"
 if errorlevel 1 (
   pause

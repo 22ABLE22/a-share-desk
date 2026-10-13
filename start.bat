@@ -1,6 +1,6 @@
 @echo off
 setlocal
-title Gupiao Start
+title A-Share Desk Start
 set "PORT=8765"
 set "ROOT=%~dp0"
 set "LOG=%ROOT%backend\uvicorn.log"

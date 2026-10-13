@@ -1,4 +1,4 @@
-# Start gupiao uvicorn hidden (no console window)
+# Start a-share-desk uvicorn hidden (no console window)
 param(
   [string]$Root = (Split-Path -Parent $MyInvocation.MyCommand.Path)
 )

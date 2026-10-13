@@ -1,4 +1,4 @@
-# 沪深股票分析（个人学习版）
+# 沪深股票分析 · a-share-desk（个人学习版）
 
 面向沪深个股 / ETF 的本地网页分析台：持仓盈亏、完整 K 线、经典指标信号、基本面速览、自选对比。
 
@@ -41,7 +41,7 @@ cd backend
 ## 首次安装依赖
 
 ```powershell
-cd E:\Users\Admin\github\gupiao
+cd <项目目录>
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
@@ -58,7 +58,7 @@ python -m venv .venv
 ## 项目结构
 
 ```
-gupiao/
+a-share-desk/
 ├── backend/          # FastAPI + akshare + 指标计算
 │   ├── main.py
 │   └── services/

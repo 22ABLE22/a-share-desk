@@ -14,3 +14,7 @@ data/alerts.json
 .env
 *.token
 credentials*
+
+# 本地进度文档：含本机路径与开发叙事，仅存本机，不进仓库
+todo.md
+done.md

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import logging
 import threading
 import time
@@ -12,7 +13,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-_cache: dict[str, tuple[float, Any]] = {}
+_cache: dict[str, tuple[float, float, Any]] = {}  # key -> (stored_at, ttl, value)
 _CACHE_TTL = 60.0  # seconds
 _CACHE_MAX_ENTRIES = 512
 _cache_lock = threading.Lock()
@@ -23,20 +24,26 @@ def cache_fresh(prefix: str) -> bool:
 
     The previous implementation checked key existence only, so an expired
     entry still counted as "warm" and triggered a full 20s snapshot refetch.
+    Each entry is now aged against its own TTL rather than a global default.
     """
     now = time.time()
     with _cache_lock:
-        for k, (ts, _v) in _cache.items():
-            if k.startswith(prefix) and now - ts < _CACHE_TTL:
+        for k, (ts, ttl, _v) in _cache.items():
+            if k.startswith(prefix) and now - ts < ttl:
                 return True
     return False
 
 
 def _prune_cache() -> None:
-    """Drop expired entries; hard-cap size so long runs don't leak memory."""
+    """Drop expired entries; hard-cap size so long runs don't leak memory.
+
+    Expiry uses each entry's own TTL. It previously used `_CACHE_TTL * 30`
+    (1800s) for everything, which evicted still-valid long-lived entries such as
+    `stock_info` (3600s).
+    """
     now = time.time()
     with _cache_lock:
-        expired = [k for k, (ts, _) in _cache.items() if now - ts > _CACHE_TTL * 30]
+        expired = [k for k, (ts, ttl, _) in _cache.items() if now - ts > ttl]
         for k in expired:
             _cache.pop(k, None)
         if len(_cache) > _CACHE_MAX_ENTRIES:
@@ -60,17 +67,20 @@ def _is_empty(val) -> bool:
 
 def _cached(key: str, ttl: float = _CACHE_TTL, skip_empty: bool = True):
     def deco(fn):
+        @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             ck = key + ":" + repr((args, sorted(kwargs.items())))
             now = time.time()
             with _cache_lock:
                 hit = _cache.get(ck)
-                if hit and now - hit[0] < ttl:
-                    return hit[1]
+                if hit and now - hit[0] < hit[1]:
+                    return hit[2]
             val = fn(*args, **kwargs)
             if not (skip_empty and _is_empty(val)):
+                # Timestamp after the fetch: stamping before it made a slow
+                # upstream call consume its own TTL.
                 with _cache_lock:
-                    _cache[ck] = (now, val)
+                    _cache[ck] = (time.time(), ttl, val)
                 if len(_cache) > _CACHE_MAX_ENTRIES:
                     _prune_cache()
             return val
@@ -547,7 +557,24 @@ def _quote_fallback_hist(code: str, market: str, full: str) -> dict:
         return {"code": code, "market": market, "full": full, "name": full, "price": 0, "error": str(e)}
 
 
-def _standardize_ohlcv(df: pd.DataFrame, days: int | None = None) -> pd.DataFrame:
+# A-share lot size: both SH and SZ trade in 手 (lots) of 100 shares. akshare's
+# East Money history endpoints report 成交量 in 手, while the sina endpoints
+# already return 股. Without this conversion the same symbol's `volume` silently
+# changes unit by 100x depending on which source won the fallback chain, which
+# corrupts the volume factor and any volume-based statistic.
+_LOT_SIZE = 100
+
+
+def _standardize_ohlcv(
+    df: pd.DataFrame,
+    days: int | None = None,
+    volume_in_lots: bool = False,
+) -> pd.DataFrame:
+    """Normalize an OHLCV frame to a common schema.
+
+    `volume_in_lots=True` converts 成交量 from 手 to 股 so that frames from
+    every source agree on unit. Callers must state the source's convention.
+    """
     if df is None or len(df) == 0:
         return pd.DataFrame()
     rename = {
@@ -580,6 +607,8 @@ def _standardize_ohlcv(df: pd.DataFrame, days: int | None = None) -> pd.DataFram
     for col in ("open", "high", "low", "close", "volume", "amount"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+    if volume_in_lots and "volume" in df.columns:
+        df["volume"] = df["volume"] * _LOT_SIZE
     if "date" not in df.columns:
         return pd.DataFrame()
     df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
@@ -623,9 +652,9 @@ def _fetch_hist_sina(code: str, market: str, adjust: str = "qfq") -> pd.DataFram
 def _fetch_hist_tencent(code: str, market: str) -> pd.DataFrame:
     """Tencent daily K as last-resort fallback.
 
-    Note: Tencent reports volume in 手 (lots), so it is scaled to shares to stay
-    consistent with the EM/sina sources. Tencent does not return 成交额, so
-    amount is left as 0 rather than being aliased to volume.
+    Returns raw upstream values: Tencent reports volume in 手 (lots), so the
+    caller must pass volume_in_lots=True to _standardize_ohlcv. Tencent does not
+    return 成交额, so amount is left as 0 rather than being aliased to volume.
     """
     import requests
     prefix = _exch_prefix(market)
@@ -651,8 +680,8 @@ def _fetch_hist_tencent(code: str, market: str) -> pd.DataFrame:
                 "close": float(b[2]),
                 "high": float(b[3]),
                 "low": float(b[4]),
-                "volume": float(b[5]) * 100,  # 手 -> 股
-                "amount": 0.0,                # not provided by this endpoint
+                "volume": float(b[5]),  # 手; converted in _standardize_ohlcv
+                "amount": 0.0,          # not provided by this endpoint
             })
         except (TypeError, ValueError):
             continue
@@ -668,9 +697,14 @@ def _history_normalized(code: str, market: str, days: int, adjust: str) -> pd.Da
     end_s = end.strftime("%Y%m%d")
 
     def try_sources():
-        # EM once (rich fields); fail fast to sina/tencent
+        # EM once (rich fields); fail fast to sina/tencent.
+        # Volume unit per source: EM -> 手, sina -> 股, tencent -> 手.
         try:
-            df = _standardize_ohlcv(_fetch_hist_em(code, market, start_s, end_s, adjust or "qfq"), days)
+            df = _standardize_ohlcv(
+                _fetch_hist_em(code, market, start_s, end_s, adjust or "qfq"),
+                days,
+                volume_in_lots=True,
+            )
             if len(df):
                 return df
         except Exception as e:
@@ -684,7 +718,9 @@ def _history_normalized(code: str, market: str, days: int, adjust: str) -> pd.Da
             logger.warning("Sina hist %s.%s: %s", code, market, e)
         # Tencent
         try:
-            df = _standardize_ohlcv(_fetch_hist_tencent(code, market), days)
+            df = _standardize_ohlcv(
+                _fetch_hist_tencent(code, market), days, volume_in_lots=True
+            )
             if len(df):
                 return df
         except Exception as e:
@@ -749,13 +785,13 @@ def get_name(code: str, market: str = "") -> str:
 
 
 @_cached("intraday", 60)
-def get_intraday(code: str, market: str = "", scale: int = 1, datalen: int = 240) -> list[dict]:
-    """Intraday minute bars from sina (1/5/15/30/60 min).
+def _intraday_normalized(code: str, market: str, scale: int, datalen: int) -> list[dict]:
+    """Intraday fetch for an already-normalized (code, MARKET) pair.
 
-    Returns [{time, open, high, low, close, volume}], oldest->newest.
-    scale=1 with datalen=240 covers a full trading session.
+    Split out of `get_intraday` so the cache key is built from normalized
+    arguments: '159516'+'SZ' and '159516.SZ'+'' previously produced two entries
+    for identical data.
     """
-    code, market = parse_symbol(_full_code(code, market))
     prefix = _exch_prefix(market)
     try:
         import requests
@@ -790,6 +826,19 @@ def get_intraday(code: str, market: str = "", scale: int = 1, datalen: int = 240
         return []
 
 
+def get_intraday(code: str, market: str = "", scale: int = 1, datalen: int = 240) -> list[dict]:
+    """Intraday minute bars from sina (1/5/15/30/60 min).
+
+    Returns [{time, open, high, low, close, volume}], oldest->newest.
+    scale=1 with datalen=240 covers a full trading session.
+
+    Symbols are normalized before the cache lookup so alternate spellings of the
+    same instrument share one entry.
+    """
+    code, market = parse_symbol(_full_code(code, market))
+    return _intraday_normalized(code, market, int(scale), int(datalen))
+
+
 def _market_from_prefix(symbol: str) -> str:
     s = symbol.strip().lower()
     if s.startswith("sh"):
@@ -806,8 +855,12 @@ _SINA_TYPE_MAP = {"11": "stock", "12": "stock", "203": "etf"}
 
 
 @_cached("search", 300)
-def _search_sina(q: str) -> list[dict]:
-    """Sina suggest — one light request, works while EM is rate-limited."""
+def _search_sina_normalized(q: str) -> list[dict]:
+    """Sina suggest for an already-normalized query (stripped + lowercased).
+
+    Caching on the normalized form means '茅台 ' and '茅台' share one entry
+    instead of issuing two upstream requests.
+    """
     import requests
     url = f"https://suggest3.sinajs.cn/suggest/key={q}"
     r = requests.get(
@@ -851,10 +904,26 @@ def _search_sina(q: str) -> list[dict]:
     return out
 
 
+def _search_sina(q: str) -> list[dict]:
+    """Sina suggest — one light request, works while EM is rate-limited."""
+    return _search_sina_normalized(q.strip().lower())
+
+
 def _search_spot_tables(q: str, limit: int) -> list[dict]:
-    """Fallback: filter the cached EM snapshots (only cheap when already warm)."""
+    """Fallback: filter the cached EM snapshots.
+
+    Only *already-warm* tables are consulted. Calling `_etf_spot_df()` and
+    `_stock_spot_df()` unconditionally used to trigger a full A-share snapshot
+    download (~18s, 16 paged requests) on an ordinary search, because `search()`
+    gates on "either table is warm".
+    """
     results: list[dict] = []
-    for df, kind in ((_etf_spot_df(), "etf"), (_stock_spot_df(), "stock")):
+    tables = []
+    if cache_fresh("etf_spot:"):
+        tables.append((_etf_spot_df(), "etf"))
+    if cache_fresh("stock_spot:"):
+        tables.append((_stock_spot_df(), "stock"))
+    for df, kind in tables:
         if df is None or len(df) == 0 or len(df.columns) < 2:
             continue
         try:

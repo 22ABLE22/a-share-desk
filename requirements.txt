@@ -7,3 +7,5 @@ pandas>=2.0
 numpy>=1.24
 # 行情直连源（新浪 hq / 腾讯 qt）经 requests 访问
 requests>=2.28
+# 测试：pytest 运行 tests/（全部离线，不依赖行情源）
+pytest>=8.0

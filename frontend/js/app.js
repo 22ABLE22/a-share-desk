@@ -17,6 +17,31 @@ const state = {
 const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 
+/**
+ * Request sequencing guard.
+ *
+ * Rapidly switching symbol/period/tab starts several overlapping fetches; a
+ * slower earlier response can land after a newer one and overwrite the UI with
+ * stale data. Each logical view takes a token before awaiting and checks it
+ * afterwards — only the newest request for that view may render.
+ *
+ * Usage:
+ *   const t = beginRequest("chart");
+ *   const data = await api(...);
+ *   if (!isCurrent("chart", t)) return;   // a newer request superseded us
+ */
+const _reqTokens = new Map();
+
+function beginRequest(view) {
+  const next = (_reqTokens.get(view) || 0) + 1;
+  _reqTokens.set(view, next);
+  return next;
+}
+
+function isCurrent(view, token) {
+  return _reqTokens.get(view) === token;
+}
+
 function fmtNum(n, digits = 2) {
   if (n === null || n === undefined || Number.isNaN(Number(n))) return "—";
   return Number(n).toLocaleString("zh-CN", {
@@ -433,6 +458,7 @@ let klineChart = null;
 
 async function loadChart() {
   const el = $("#klineChart");
+  const token = beginRequest("chart");
   state.signals = null; // 防跨标的残留
   if (!klineChart) klineChart = echarts.init(el);
   klineChart.showLoading({ text: "加载中", color: "#2f6fed", maskColor: "rgba(244,246,251,0.6)" });
@@ -441,11 +467,13 @@ async function loadChart() {
       const data = await api(
         `/api/intraday?symbol=${encodeURIComponent(state.symbol)}&market=${encodeURIComponent(state.market)}`
       );
+      if (!isCurrent("chart", token)) return; // 已被更新的请求取代
       state.intraday = data;
       setActiveSymbol(data.code, data.market, data.name);
       renderIntraday(data);
       await loadSignalsSide();
     } catch (e) {
+      if (!isCurrent("chart", token)) return;
       klineChart.hideLoading();
       toast("分时加载失败：" + e.message);
     }
@@ -455,11 +483,13 @@ async function loadChart() {
     const data = await api(
       `/api/history?symbol=${encodeURIComponent(state.symbol)}&market=${encodeURIComponent(state.market)}&days=${state.days}&adjust=${encodeURIComponent(state.adjust)}`
     );
+    if (!isCurrent("chart", token)) return; // 已被更新的请求取代
     state.history = data;
     setActiveSymbol(data.code, data.market, data.name);
     renderKline(data);
     await loadSignalsSide();
   } catch (e) {
+    if (!isCurrent("chart", token)) return;
     klineChart.hideLoading();
     toast("K线加载失败：" + e.message);
   }
@@ -841,9 +871,11 @@ async function loadSignalsSide() {
 async function loadFundamentals() {
   const grid = $("#fundGrid");
   const tips = $("#fundTips");
+  const token = beginRequest("fund");
   grid.innerHTML = `<div class="fund-item"><div class="k">加载中</div><div class="v">…</div></div>`;
   try {
     const data = await api(`/api/fundamentals?symbol=${encodeURIComponent(state.symbol)}&market=${encodeURIComponent(state.market)}`);
+    if (!isCurrent("fund", token)) return; // 已被更新的请求取代
     setActiveSymbol(data.code, data.market, data.name);
     $("#fundName").textContent = `${data.name || ""} · ${data.code}.${data.market}`;
     const items = data.items || [];
@@ -864,6 +896,7 @@ async function loadFundamentals() {
     const tipLines = buildFundTips(data);
     tips.innerHTML = tipLines.map((t) => `<li>${escapeHtml(t)}</li>`).join("");
   } catch (e) {
+    if (!isCurrent("fund", token)) return;
     grid.innerHTML = `<div class="empty">加载失败：${escapeHtml(e.message)}</div>`;
   }
 }

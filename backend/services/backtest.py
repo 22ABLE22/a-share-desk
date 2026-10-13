@@ -12,70 +12,26 @@ import pandas as pd
 
 from . import data as data_svc
 from . import indicators as ind
+from . import signal_engine as se
 
 
 def _score_series(df: pd.DataFrame) -> pd.Series:
-    """Approximate daily composite score using the same factors as signal_engine.
+    """Daily composite score for every bar, using the live rule set.
 
-    Computed on each bar using only information available up to that bar
-    (rolling indicators are causal).
+    Delegates to `signal_engine._bar_factors` so the calibration measures the
+    rules the app actually applies. It previously re-implemented a subset of the
+    factors (no volume, no short-term momentum), so `/api/backtest` reported the
+    accuracy of a different model than the one shown in the UI.
+
+    Each bar is scored from that bar's own close and from indicators computed
+    only up to that bar, so the walk-forward result cannot leak future data.
     """
     out = ind.enrich(df)
     n = len(out)
     scores = np.full(n, 50.0)
-
-    close = out["close"].astype(float)
     for i in range(n):
-        s = 50.0
-        row = out.iloc[i]
-        prev = out.iloc[i - 1] if i else None
-
-        ma5, ma10, ma20, ma60 = row.get("ma5"), row.get("ma10"), row.get("ma20"), row.get("ma60")
-        if all(pd.notna(x) for x in (ma5, ma10, ma20)):
-            if ma5 > ma10 > ma20:
-                s += 12
-            elif ma5 < ma10 < ma20:
-                s -= 12
-            elif ma5 > ma20:
-                s += 4
-            else:
-                s -= 4
-        if pd.notna(ma60):
-            s += 6 if close.iloc[i] > ma60 else -6
-
-        dif, dea = row.get("macd_dif"), row.get("macd_dea")
-        if prev is not None and all(pd.notna(x) for x in (dif, dea, prev.get("macd_dif"), prev.get("macd_dea"))):
-            dif_p, dea_p = prev.get("macd_dif"), prev.get("macd_dea")
-            if dif_p <= dea_p and dif > dea:
-                s += 10
-            elif dif_p >= dea_p and dif < dea:
-                s -= 10
-            elif dif > dea:
-                s += 4
-            else:
-                s -= 4
-
-        rsi14 = row.get("rsi14")
-        if pd.notna(rsi14):
-            if rsi14 >= 75:
-                s -= 8
-            elif rsi14 <= 30:
-                s += 8
-
-        upper, mid, lower = row.get("boll_upper"), row.get("boll_mid"), row.get("boll_lower")
-        px = float(close.iloc[i])
-        if all(pd.notna(x) for x in (upper, mid, lower)):
-            if px <= lower:
-                s += 6
-            elif px >= upper:
-                s -= 6
-            elif px > mid:
-                s += 2
-            else:
-                s -= 2
-
-        scores[i] = max(0.0, min(100.0, s))
-
+        # price=bar close: this is a historical replay, not a live quote.
+        scores[i] = se._score_from_factors(se._bar_factors(out, i))
     return pd.Series(scores, index=out.index)
 
 

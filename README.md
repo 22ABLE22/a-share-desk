@@ -25,7 +25,7 @@
 
 ## 快速启动
 
-双击 `启动服务.bat`，浏览器打开：
+双击 `start.bat`，浏览器打开：
 
 ```
 http://127.0.0.1:8765
@@ -65,7 +65,7 @@ gupiao/
 ├── frontend/         # 网页界面（ECharts）
 ├── data/             # 本地持仓配置
 ├── requirements.txt
-└── 启动服务.bat
+└── start.bat
 ```
 
 ## 常用操作

@@ -30,12 +30,40 @@ def _clear_data_cache():
 
 
 @pytest.fixture(autouse=True)
-def _no_network(monkeypatch):
-    """Fail loudly if a test accidentally reaches for the network."""
+def _no_network(monkeypatch, request):
+    """Fail loudly if a test accidentally reaches for the network.
+
+    Only outbound connects to a *remote* address are blocked. Local loopback and
+    ``socket.socketpair`` are allowed: on Windows the asyncio event loop builds
+    its internal self-pipe from a socket pair, which shows up as a loopback
+    ``connect`` and would otherwise make every ASGI test fail for a reason that
+    has nothing to do with network access.
+    """
+    if request.node.get_closest_marker("allow_network"):
+        return
+
     import socket
 
-    def _blocked(*args, **kwargs):
+    real_connect = socket.socket.connect
+
+    def _guarded_connect(self, address, *args, **kwargs):
+        host = None
+        if isinstance(address, tuple) and address:
+            host = address[0]
+        elif isinstance(address, (str, bytes)):
+            host = address
+        if isinstance(host, bytes):
+            host = host.decode("latin-1", "replace")
+        # Loopback / unix-style local addresses are infrastructure, not egress.
+        if host is None or host in ("127.0.0.1", "::1", "localhost", "") or str(host).startswith(
+            ("127.", "\\\\.\\pipe", "/")
+        ):
+            return real_connect(self, address, *args, **kwargs)
+        raise AssertionError(f"test attempted a network connection to {host!r}")
+
+    monkeypatch.setattr(socket.socket, "connect", _guarded_connect, raising=False)
+
+    def _blocked_create_connection(*args, **kwargs):
         raise AssertionError("test attempted a network connection")
 
-    monkeypatch.setattr(socket.socket, "connect", _blocked, raising=False)
-    monkeypatch.setattr(socket, "create_connection", _blocked, raising=False)
+    monkeypatch.setattr(socket, "create_connection", _blocked_create_connection, raising=False)

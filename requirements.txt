@@ -7,5 +7,9 @@ pandas>=2.0
 numpy>=1.24
 # 行情直连源（新浪 hq / 腾讯 qt）经 requests 访问
 requests>=2.28
-# 测试：pytest 运行 tests/（全部离线，不依赖行情源）
+
+# --- 测试专用（不影响运行时）---
+# pytest 运行 tests/（全部离线，不依赖行情源）
 pytest>=8.0
+# starlette 的 TestClient 需要它；仅用于测试
+httpx2>=2.0

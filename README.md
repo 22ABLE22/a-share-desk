@@ -39,6 +39,35 @@ cd backend
 ..\\.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8765
 ```
 
+## 对外开放时的访问令牌
+
+默认**不设令牌**，本机使用无需任何额外步骤（行为与以往完全一致）。
+
+一旦要让服务在本机之外可达（局域网 `--host 0.0.0.0`、Cloudflare Tunnel、服务器），
+**必须先设令牌**——否则任何能访问该地址的人都能读取你的真实持仓与成本，并可增删。
+
+```powershell
+# 1) 生成一个随机令牌
+$token = -join ((48..57) + (97..122) | Get-Random -Count 32 | ForEach-Object {[char]$_})
+
+# 2) 带令牌启动（PowerShell）
+$env:ASHARE_DESK_TOKEN = $token
+.venv\Scripts\python.exe -m uvicorn main:app --host 0.0.0.0 --port 8765 --app-dir backend
+```
+
+浏览器首次访问用带片段（fragment）的地址，令牌只在本地保存、不会发送到服务器或写入日志：
+
+```
+http://<地址>:8765/#token=<你的令牌>
+```
+
+之后令牌存在 `localStorage`，地址栏中的片段会被自动清除。
+命令行访问可用 `Authorization: Bearer <token>` 或 `X-API-Token: <token>`。
+
+- 未设令牌时 `/api/health` 返回 `"auth_enabled": false`
+- 令牌错误或缺失返回 **401**；静态前端（`/`、`/static/*`）始终公开，以便页面能加载
+- 令牌比较使用恒定时间算法，避免时序侧信道
+
 ## 首次安装依赖
 
 ```powershell

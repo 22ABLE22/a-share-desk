@@ -232,8 +232,61 @@ function toast(msg) {
   toast._t = setTimeout(() => el.classList.add("hidden"), 2800);
 }
 
+/* ---------- API token ----------
+ * When the backend is exposed beyond localhost it requires a token
+ * (env ASHARE_DESK_TOKEN). The token is handed over once via the URL fragment
+ * (#token=...), which never leaves the browser — fragments are not sent to the
+ * server nor written to access logs — then persisted in localStorage.
+ *
+ * Every request goes through apiFetch() so the header cannot be forgotten on a
+ * newly added call site.
+ */
+const TOKEN_KEY = "a-share-desk.token";
+const TOKEN_HEADER = "X-API-Token";
+
+function readTokenFromUrl() {
+  const m = /[#&]token=([^&]+)/.exec(location.hash || "");
+  if (!m) return null;
+  const value = decodeURIComponent(m[1]);
+  try {
+    localStorage.setItem(TOKEN_KEY, value);
+  } catch (_) {}
+  // Drop it from the address bar so it is not shoulder-surfed or bookmarked.
+  history.replaceState(null, "", location.pathname + location.search);
+  return value;
+}
+
+function getToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function setToken(value) {
+  try {
+    if (value) localStorage.setItem(TOKEN_KEY, value);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch (_) {}
+}
+
+/** Thin fetch() wrapper that attaches the token when one is configured. */
+async function apiFetch(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  const token = getToken();
+  if (token) headers.set(TOKEN_HEADER, token);
+  const res = await fetch(url, { ...options, headers });
+  if (res.status === 401) {
+    // Token missing/rotated: surface it instead of failing silently.
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || "未授权：请用带 #token=... 的链接重新打开");
+  }
+  return res;
+}
+
 async function api(path) {
-  const res = await fetch(API + path);
+  const res = await apiFetch(API + path);
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -462,7 +515,7 @@ function renderPortfolio(data) {
       e.stopPropagation();
       if (!confirm("确认删除该持仓？")) return;
       try {
-        const res = await fetch(`${API}/api/portfolio/holdings/${btn.dataset.idx}`, { method: "DELETE" });
+        const res = await apiFetch(`${API}/api/portfolio/holdings/${btn.dataset.idx}`, { method: "DELETE" });
         if (!res.ok) throw new Error("删除失败");
         state.portfolio = await res.json();
         renderPortfolio(state.portfolio);
@@ -571,7 +624,7 @@ $("#holdingForm").addEventListener("submit", async (e) => {
       };
       if (stop != null) payload.stop_line = stop;
       if (take != null) payload.take_line = take;
-      res = await fetch(`${API}/api/portfolio/holdings`, {
+      res = await apiFetch(`${API}/api/portfolio/holdings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -582,7 +635,7 @@ $("#holdingForm").addEventListener("submit", async (e) => {
         stop_line: form.stop_line.value === "" ? null : stop,
         take_line: form.take_line.value === "" ? null : take,
       };
-      res = await fetch(`${API}/api/portfolio/holdings/${editIdx}`, {
+      res = await apiFetch(`${API}/api/portfolio/holdings/${editIdx}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -1140,7 +1193,7 @@ function renderWatch(list) {
     });
     el.querySelector(".btn-unwatch").addEventListener("click", async () => {
       try {
-        const res = await fetch(
+        const res = await apiFetch(
           `${API}/api/portfolio/watch?code=${encodeURIComponent(el.dataset.code)}&market=${encodeURIComponent(el.dataset.market)}`,
           { method: "DELETE" }
         );
@@ -1213,7 +1266,7 @@ $("#btnAddWatch").addEventListener("click", async () => {
   const market = $("#watchMarket").value.trim().toUpperCase() || "";
   if (!code) return toast("请输入代码");
   try {
-    const res = await fetch(`${API}/api/portfolio/watch`, {
+    const res = await apiFetch(`${API}/api/portfolio/watch`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code, market }),
@@ -1285,7 +1338,7 @@ async function loadReference() {
       });
       card.querySelector(".btn-watch").addEventListener("click", async () => {
         try {
-          const res = await fetch(`${API}/api/portfolio/watch`, {
+          const res = await apiFetch(`${API}/api/portfolio/watch`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ code, market }),
@@ -1429,7 +1482,7 @@ $("#btnNotifyHelp")?.addEventListener("click", () => {
 $("#btnScanNow")?.addEventListener("click", async () => {
   try {
     toast("扫描中…");
-    const res = await fetch(`${API}/api/monitor/scan`, { method: "POST" });
+    const res = await apiFetch(`${API}/api/monitor/scan`, { method: "POST" });
     if (!res.ok) throw new Error("扫描失败");
     await loadLive();
     toast("扫描完成");
@@ -1442,7 +1495,7 @@ $("#btnToggleMon")?.addEventListener("click", async () => {
   try {
     const st = await api("/api/monitor");
     const url = st.running ? "/api/monitor/stop" : "/api/monitor/start";
-    const res = await fetch(API + url, { method: "POST" });
+    const res = await apiFetch(API + url, { method: "POST" });
     if (!res.ok) throw new Error("操作失败");
     await loadLive();
     toast(st.running ? "监控已暂停" : "监控已启动");
@@ -1453,7 +1506,7 @@ $("#btnToggleMon")?.addEventListener("click", async () => {
 
 $("#btnClearAlerts")?.addEventListener("click", async () => {
   try {
-    await fetch(`${API}/api/alerts`, { method: "DELETE" });
+    await apiFetch(`${API}/api/alerts`, { method: "DELETE" });
     await loadLive();
     toast("提醒已清空");
   } catch (e) {
@@ -1735,6 +1788,7 @@ window.addEventListener("resize", () => {
 
 async function boot() {
   initTheme();
+  readTokenFromUrl(); // must run before the first API call
   setActiveSymbol("159516", "SZ", "159516.SZ");
   await loadPortfolio();
   loadSignalsSide();

@@ -5,11 +5,13 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+
+import auth
 
 from services import advisor as advisor_svc
 from services import alerts as alerts_svc
@@ -53,6 +55,30 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def _require_token_for_api(request: Request, call_next):
+    """Guard /api/* when a token is configured.
+
+    Implemented as middleware rather than a per-route dependency so that a newly
+    added endpoint cannot accidentally ship unprotected. The static frontend is
+    deliberately left open — the browser must be able to load the page that asks
+    for the token. With no token configured this is a no-op, preserving the
+    original local-only behaviour.
+    """
+    if request.url.path.startswith("/api/") and auth.auth_enabled():
+        supplied = auth._extract(request)
+        if not auth.token_matches(supplied, auth.configured_token() or ""):
+            logger.warning(
+                "rejected unauthenticated request: %s %s", request.method, request.url.path
+            )
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "需要访问令牌（Authorization: Bearer <token> 或 X-API-Token）"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    return await call_next(request)
+
+
 class HoldingIn(BaseModel):
     code: str
     market: str = ""
@@ -78,7 +104,9 @@ class WatchIn(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "app": "a-share-desk"}
+    # auth_enabled is safe to expose: it reveals no secret, and lets the UI show
+    # the right state (and lets a probe distinguish 401-because-auth from outage).
+    return {"ok": True, "app": "a-share-desk", "auth_enabled": auth.auth_enabled()}
 
 
 @app.get("/api/quote")

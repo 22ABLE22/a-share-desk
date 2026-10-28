@@ -303,3 +303,28 @@ def test_all_api_calls_use_the_wrapper(app_js):
 def test_token_read_before_first_request(app_js):
     boot = app_js[app_js.index("async function boot()"):]
     assert boot.index("readTokenFromUrl") < boot.index("loadPortfolio")
+
+
+# --------------------------------------------------------------------------
+# start.bat readiness probe
+# --------------------------------------------------------------------------
+def test_start_bat_probe_tolerates_401():
+    """Regression: enabling auth made start.bat report "[FAIL] Not ready".
+
+    The probe treated any non-2xx from /api/health as "service down". With a
+    token configured that endpoint answers 401, so a perfectly healthy service
+    was reported as failed (and the log dump + `pause` blocked the launcher).
+    A 401 proves the server is up, so it must count as ready.
+    """
+    from pathlib import Path
+
+    bat = (Path(__file__).resolve().parents[1] / "start.bat").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    probes = [ln for ln in bat.splitlines() if "api/health" in ln]
+    assert probes, "start.bat no longer probes /api/health"
+    for line in probes:
+        assert "401" in line, (
+            "probe must treat 401 as 'up' (auth enabled), otherwise a healthy "
+            "service is reported as failed: " + line.strip()
+        )

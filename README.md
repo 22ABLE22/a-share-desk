@@ -68,6 +68,9 @@ http://<地址>:8765/#token=<你的令牌>
 - 令牌错误或缺失返回 **401**；静态前端（`/`、`/static/*`）始终公开，以便页面能加载
 - 令牌比较使用恒定时间算法，避免时序侧信道
 
+> 想在手机 / 外网访问（不需要公网 IP、不花钱、不备案）？
+> 见 **[外网访问指南](docs/tunnel-guide.md)**（Cloudflare Tunnel，含完整步骤与排错）。
+
 ## 首次安装依赖
 
 ```powershell
@@ -93,7 +96,8 @@ a-share-desk/
 │   ├── main.py
 │   └── services/
 ├── frontend/         # 网页界面（ECharts）
-├── tests/            # pytest 测试（全部离线，111 项）
+├── tests/            # pytest 测试（全部离线，153 项）
+├── docs/             # 使用指南（外网访问等）
 ├── data/             # 本地持仓配置
 ├── requirements.txt
 └── start.bat

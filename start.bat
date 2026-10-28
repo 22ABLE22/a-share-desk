@@ -23,13 +23,13 @@ if errorlevel 1 (
 )
 
 ping -n 5 127.0.0.1 >nul
-powershell -NoProfile -Command "try{(Invoke-WebRequest 'http://127.0.0.1:8765/api/health' -UseBasicParsing -TimeoutSec 3)|Out-Null; exit 0}catch{exit 1}"
+powershell -NoProfile -Command "try{$r=Invoke-WebRequest 'http://127.0.0.1:8765/api/health' -UseBasicParsing -TimeoutSec 3; exit 0}catch{if($_.Exception.Response.StatusCode.value__ -eq 401){exit 0}else{exit 1}}"
 if not errorlevel 1 goto OPEN
 ping -n 5 127.0.0.1 >nul
-powershell -NoProfile -Command "try{(Invoke-WebRequest 'http://127.0.0.1:8765/api/health' -UseBasicParsing -TimeoutSec 3)|Out-Null; exit 0}catch{exit 1}"
+powershell -NoProfile -Command "try{$r=Invoke-WebRequest 'http://127.0.0.1:8765/api/health' -UseBasicParsing -TimeoutSec 3; exit 0}catch{if($_.Exception.Response.StatusCode.value__ -eq 401){exit 0}else{exit 1}}"
 if not errorlevel 1 goto OPEN
 ping -n 5 127.0.0.1 >nul
-powershell -NoProfile -Command "try{(Invoke-WebRequest 'http://127.0.0.1:8765/api/health' -UseBasicParsing -TimeoutSec 3)|Out-Null; exit 0}catch{exit 1}"
+powershell -NoProfile -Command "try{$r=Invoke-WebRequest 'http://127.0.0.1:8765/api/health' -UseBasicParsing -TimeoutSec 3; exit 0}catch{if($_.Exception.Response.StatusCode.value__ -eq 401){exit 0}else{exit 1}}"
 if not errorlevel 1 goto OPEN
 
 echo [FAIL] Not ready. Log:
